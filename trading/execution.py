@@ -18,11 +18,35 @@ import pandas as pd
 import numpy as np
 from conf import config
 from datetime import datetime, timedelta
+import pickle
 import json as json
+import trading.strategies as strategies
+
 
 api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
 
-#import signals from strategies module
 
-from trading import strategies
-print(signals)
+#execute the trade based on the final trading execution signal
+signals = strategies.signals
+
+buy = signals.count('buy')
+sell = signals.count('sell')
+
+if buy >= 2:
+    execution_signal = "BUY"
+elif sell >= 2:
+    execution_signal = "SELL"
+else:
+    execution_signal = "HOLD"
+
+print(execution_signal)
+
+#import markov matrix to determing bet size for trade execution
+
+
+markov_matrix = markov_matrices["AAPL"]
+print(markov_matrix)
+
+#Use Kellys criterion for bet sizing based on the markov matrix and the execution signal
+
+

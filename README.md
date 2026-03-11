@@ -12,7 +12,7 @@ This is chosen for simplicity. In order to get a deeper dive to the markets one 
 
 ## TO DO
 
-4. execute trades based on trading signals
+4. execute trades based on trading signals (kelly criterion based on markov chain?)
 5. implement risk management calculations for the portfolio (VaR etc.)
 6. adjust strategy based on portfolio composition
 7. make trading automatic by putting scripts on cloud server to be ran daily
