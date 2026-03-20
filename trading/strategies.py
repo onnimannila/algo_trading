@@ -307,3 +307,15 @@ print(f"SMA Signal: {sma_signal}")
 print(f"Markov Signal: {markov_signal}")
 print(f"LSTM Signal: {lstm_signal}")
 print(f"Final Decision: {final_decision}")
+
+# ===== EXPORT VARIABLES FOR OTHER FILES =====
+
+# Use AAPL as main trading asset
+returns_series = df_aapl["pct_change"].dropna()
+
+# Align states with returns
+state_series = new_dataset_df['state_close']
+
+# Export signals and matrices
+signals = signals
+markov_matrices = markov_matrices

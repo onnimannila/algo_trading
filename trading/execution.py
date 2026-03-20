@@ -11,7 +11,8 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 #import necessary libraries to plot data
-
+import sys
+import os
 from matplotlib import pyplot as plt
 import plotly.express as px
 import pandas as pd
@@ -25,10 +26,22 @@ import trading.strategies as strategies
 
 api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
 
+# --- FIX PATH (since execution.py is in subfolder) ---
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-#execute the trade based on the final trading execution signal
+returns = strategies.returns_series
+states = strategies.state_series
 signals = strategies.signals
+markov_matrix = strategies.markov_matrices["AAPL"]
 
+
+# --- ALIGN RETURNS AND STATES ---
+common_index = returns.index.intersection(states.index)
+returns = returns.loc[common_index]
+states = states.loc[common_index]
+
+
+# --- DETERMINE EXECUTION SIGNAL ---
 buy = signals.count('buy')
 sell = signals.count('sell')
 
@@ -39,14 +52,69 @@ elif sell >= 2:
 else:
     execution_signal = "HOLD"
 
-print(execution_signal)
-
-#import markov matrix to determing bet size for trade execution
+print("Execution Signal:", execution_signal)
 
 
-markov_matrix = markov_matrices["AAPL"]
-print(markov_matrix)
+# --- MAP STATE NAMES ---
+state_map = {
+    "Up": "priorstate_up",
+    "Down": "priorstate_down",
+    "Steady": "priorstate_steady"
+}
 
-#Use Kellys criterion for bet sizing based on the markov matrix and the execution signal
+current_state_raw = states.iloc[-1]
+current_state = state_map[current_state_raw]
+
+print("Current State:", current_state_raw)
 
 
+# --- ESTIMATE CONDITIONAL RETURNS ---
+mu_up = returns[states == "Up"].mean()
+mu_down = returns[states == "Down"].mean()
+mu_steady = returns[states == "Steady"].mean()
+
+mu_dict= {
+    "state_close_up": mu_up,
+    "state_close_down": mu_down,
+    "state_close_steady": mu_steady
+}
+
+
+# --- KELLY FUNCTION ---
+def kelly_fraction(markov_matrix, current_state, mu_dict, fraction=0.25):
+    row = markov_matrix.loc[current_state]
+
+    ER = 0.0
+    ER2 = 0.0
+
+    for state, prob in row.items():
+        mu = mu_dict.get(state, 0.0)
+        ER += prob * mu
+        ER2 += prob * (mu ** 2)
+
+    if ER2 == 0:
+        return 0.0
+
+    kelly_full = ER / ER2
+    kelly_frac = fraction * kelly_full
+
+    return max(0.0, min(kelly_frac, 1.0))
+
+
+# --- POSITION SIZE ---
+fraction = 0.25
+
+if execution_signal == "BUY":
+    position_size = kelly_fraction(markov_matrix, current_state, mu_dict, fraction)
+
+elif execution_signal == "SELL":
+    mu_dict_short = {k: -v for k, v in mu_dict.items()}
+    position_size = kelly_fraction(markov_matrix, current_state, mu_dict_short, fraction)
+
+else:
+    position_size = 0.0
+
+
+print("\n===== FINAL OUTPUT =====")
+print(f"Signal: {execution_signal}")
+print(f"Position Size: {position_size:.4f}")
