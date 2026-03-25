@@ -8,6 +8,7 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.stream import TradingStream
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 
 #import necessary libraries to plot data
@@ -22,6 +23,7 @@ from datetime import datetime, timedelta
 import pickle
 import json as json
 import trading.strategies as strategies
+import trading.position_risk as position_risk
 
 
 api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
@@ -118,3 +120,60 @@ else:
 print("\n===== FINAL OUTPUT =====")
 print(f"Signal: {execution_signal}")
 print(f"Position Size: {position_size:.4f}")
+
+#initialize trading client
+trading_client = TradingClient(
+    config.API_Key,
+    config.Secret_key,
+    paper=True  # ✅ IMPORTANT: paper trading
+)
+
+symbol = "AAPL"
+
+
+# --- GET ACCOUNT INFO ---
+account = trading_client.get_account()
+portfolio_value = float(account.portfolio_value)
+
+print(f"Portfolio Value: ${portfolio_value:.2f}")
+
+data_client = StockHistoricalDataClient(
+    config.API_Key,
+    config.Secret_key
+)
+
+quote = data_client.get_stock_latest_quote(
+    StockLatestQuoteRequest(symbol_or_symbols=[symbol])
+)
+
+price = quote[symbol].ask_price
+print(f"Current Price: ${price:.2f}")
+
+
+# --- COMPUTE POSITION SIZE IN SHARES ---
+dollar_amount = position_size * portfolio_value
+
+shares = int(dollar_amount / price)
+
+print(f"Dollar Allocation: ${dollar_amount:.2f}")
+print(f"Shares to buy: {shares}")
+
+
+# --- EXECUTE TRADE ---
+if execution_signal == "BUY" and shares > 0:
+
+    #order = MarketOrderRequest(
+    #    symbol=symbol,
+    #    qty=shares,
+    #    side=OrderSide.BUY,
+    #    time_in_force=TimeInForce.DAY
+    #)
+
+    #trading_client.submit_order(order)
+    print(f"BUY order submitted: {shares} shares of {symbol}")
+
+elif execution_signal != "BUY":
+    print("No trade executed (not a BUY signal)")
+
+else:
+    print("Position size too small → no trade")

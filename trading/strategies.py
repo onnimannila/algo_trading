@@ -133,7 +133,7 @@ for ticker in tickers:
     new_dataset_df.dropna(inplace=True)
 
     # Classify states
-    new_dataset_df['state_close'] = new_dataset_df['Close_Gap'].apply(lambda x: 'Up' if x > 0.001 else ('Steady' if 0.000 < x <= 0.001 else 'Down'))
+    new_dataset_df['state_close'] = new_dataset_df['Close_Gap'].apply(lambda x: 'Up' if x > 0.005 else ('Steady' if 0.000 < x <= 0.005 else 'Down'))
 
     # Shift states and drop NA
     new_dataset_df['priorstate_close'] = new_dataset_df['state_close'].shift(1)

@@ -11,6 +11,7 @@ from alpaca.trading.stream import TradingStream
 from conf import config
 from trading import strategies
 from trading import execution
+from trading import position_risk
 
 # prepare the API and REST order
 api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
