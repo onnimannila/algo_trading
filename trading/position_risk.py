@@ -21,20 +21,36 @@ from conf import config
 from datetime import datetime, timedelta
 import pickle
 import json as json
-import trading.strategies as strategies
-import trading.execution as execution
+import trading as strategies
+
 
 api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
 
 # --- FIX PATH (since execution.py is in subfolder) ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+def get_positions(trading_client):
+    return trading_client.get_all_positions()
 
-positions = trading_client.get_all_positions()
+def analyze_portfolio_weights(positions, threshold=0.3):
+    # total portfolio market value
+    total_market_value = sum(float(p.market_value) for p in positions)
 
-current_qty = 0
-for p in positions:
-    if p.symbol == symbol:
-        current_qty = int(p.qty)
+    results = []
 
-print(f"Current Position: {current_qty} shares")
+    for p in positions:
+        symbol = p.symbol
+        market_value = float(p.market_value)
+
+        weight = market_value / total_market_value if total_market_value > 0 else 0
+
+        warning = weight > threshold
+
+        results.append({
+            "symbol": symbol,
+            "market_value": market_value,
+            "weight": weight,
+            "warning": warning
+        })
+
+    return results

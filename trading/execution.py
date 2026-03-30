@@ -23,7 +23,8 @@ from datetime import datetime, timedelta
 import pickle
 import json as json
 import trading.strategies as strategies
-import trading.position_risk as position_risk
+from trading.position_risk import get_positions
+from trading.position_risk import analyze_portfolio_weights
 
 
 api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
@@ -177,3 +178,15 @@ elif execution_signal != "BUY":
 
 else:
     print("Position size too small → no trade")
+
+positions = get_positions(trading_client)
+print(positions)
+
+# --- ANALYZE PORTFOLIO WEIGHTS AND DETERMINE ALLOCATION
+weights = analyze_portfolio_weights(positions)
+
+for pos in weights:
+    print(f"{pos['symbol']}: {pos['weight']*100:.2f}%")
+
+    if pos["warning"]:
+        print("⚠️ WARNING: Position exceeds 30% of portfolio!")
