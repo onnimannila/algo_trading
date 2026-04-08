@@ -32,31 +32,41 @@ api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
 # --- FIX PATH (since execution.py is in subfolder) ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-returns = strategies.returns_series
-states = strategies.state_series
-signals = strategies.signals
-markov_matrix = strategies.markov_matrices["AAPL"]
+import trading.strategies as strategies
+from trading.position_risk import get_positions
+from trading.position_risk import analyze_portfolio_weights
 
+api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
 
-# --- ALIGN RETURNS AND STATES ---
-common_index = returns.index.intersection(states.index)
-returns = returns.loc[common_index]
-states = states.loc[common_index]
+# --- FIX PATH (since execution.py is in subfolder) ---
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+#initialize trading client
+trading_client = TradingClient(
+    config.API_Key,
+    config.Secret_key,
+    paper=True  
+)
 
-# --- DETERMINE EXECUTION SIGNAL ---
-buy = signals.count('buy')
-sell = signals.count('sell')
+# --- GET ACCOUNT INFO ---
+account = trading_client.get_account()
+portfolio_value = float(account.portfolio_value)
+print(f"Portfolio Value: ${portfolio_value:.2f}")
 
-if buy >= 2:
-    execution_signal = "BUY"
-elif sell >= 2:
-    execution_signal = "SELL"
-else:
-    execution_signal = "HOLD"
+data_client = StockHistoricalDataClient(
+    config.API_Key,
+    config.Secret_key
+)
 
-print("Execution Signal:", execution_signal)
+positions = get_positions(trading_client)
+print("Current Positions:", positions)
 
+# --- ANALYZE CURRENT PORTFOLIO WEIGHTS
+current_weights = analyze_portfolio_weights(positions)
+for pos in current_weights:
+    print(f"{pos['symbol']}: {pos['weight']*100:.2f}%")
+    if pos["warning"]:
+        print("WARNING: Position exceeds 30% of portfolio!")
 
 # --- MAP STATE NAMES ---
 state_map = {
@@ -64,24 +74,6 @@ state_map = {
     "Down": "priorstate_down",
     "Steady": "priorstate_steady"
 }
-
-current_state_raw = states.iloc[-1]
-current_state = state_map[current_state_raw]
-
-print("Current State:", current_state_raw)
-
-
-# --- ESTIMATE CONDITIONAL RETURNS ---
-mu_up = returns[states == "Up"].mean()
-mu_down = returns[states == "Down"].mean()
-mu_steady = returns[states == "Steady"].mean()
-
-mu_dict= {
-    "state_close_up": mu_up,
-    "state_close_down": mu_down,
-    "state_close_steady": mu_steady
-}
-
 
 # --- KELLY FUNCTION ---
 def kelly_fraction(markov_matrix, current_state, mu_dict, fraction=0.25):
@@ -103,90 +95,101 @@ def kelly_fraction(markov_matrix, current_state, mu_dict, fraction=0.25):
 
     return max(0.0, min(kelly_frac, 1.0))
 
-
-# --- POSITION SIZE ---
 fraction = 0.25
+tickers = ['AAPL', 'TSLA', 'NVDA']
 
-if execution_signal == "BUY":
-    position_size = kelly_fraction(markov_matrix, current_state, mu_dict, fraction)
+for ticker in tickers:
+    signals = strategies.signals[ticker]
+    execution_signal = signals['final'].upper()
+    markov_matrix = strategies.markov_matrices[ticker]
+    returns = strategies.returns_series[ticker]
+    states = strategies.state_series[ticker]
 
-elif execution_signal == "SELL":
-    mu_dict_short = {k: -v for k, v in mu_dict.items()}
-    position_size = kelly_fraction(markov_matrix, current_state, mu_dict_short, fraction)
+    # --- ALIGN RETURNS AND STATES ---
+    common_index = returns.index.intersection(states.index)
+    returns = returns.loc[common_index]
+    states = states.loc[common_index]
 
-else:
-    position_size = 0.0
+    # --- DETERMINE EXECUTION SIGNAL ---
+    print(f"{ticker} - SMA: {signals['sma']}, Markov: {signals['markov']}, LSTM: {signals['lstm']}, Final: {execution_signal}")
 
+    # --- MAP CURRENT STATE ---
+    current_state_raw = states.iloc[-1]
+    current_state = state_map[current_state_raw]
+    print(f"{ticker} - Current State: {current_state_raw}")
 
-print("\n===== FINAL OUTPUT =====")
-print(f"Signal: {execution_signal}")
-print(f"Position Size: {position_size:.4f}")
+    # --- ESTIMATE CONDITIONAL RETURNS ---
+    mu_up = returns[states == "Up"].mean()
+    mu_down = returns[states == "Down"].mean()
+    mu_steady = returns[states == "Steady"].mean()
 
-#initialize trading client
-trading_client = TradingClient(
-    config.API_Key,
-    config.Secret_key,
-    paper=True  # ✅ IMPORTANT: paper trading
-)
+    mu_dict = {
+        "state_close_up": mu_up,
+        "state_close_down": mu_down,
+        "state_close_steady": mu_steady
+    }
 
-symbol = "AAPL"
+    # --- POSITION SIZE ---
+    if execution_signal == "BUY":
+        position_size = kelly_fraction(markov_matrix, current_state, mu_dict, fraction)
+    elif execution_signal == "SELL":
+        mu_dict_short = {k: -v for k, v in mu_dict.items()}
+        position_size = kelly_fraction(markov_matrix, current_state, mu_dict_short, fraction)
+    else:
+        position_size = 0.0
 
+    # --- GET PRICE ---
+    quote = data_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=[ticker]))
+    price = quote[ticker].ask_price
+    print(f"{ticker} - Current Price: ${price:.2f}")
 
-# --- GET ACCOUNT INFO ---
-account = trading_client.get_account()
-portfolio_value = float(account.portfolio_value)
+    # --- COMPUTE SHARES ---
+    dollar_amount = position_size * portfolio_value
+    shares = int(dollar_amount / price)
+    print(f"{ticker} - Dollar Allocation: ${dollar_amount:.2f}, Shares: {shares}")
 
-print(f"Portfolio Value: ${portfolio_value:.2f}")
+    # --- SIMULATE POST-TRADE PORTFOLIO ---
+    current_positions = {p.symbol: float(p.market_value) for p in positions}
+    if execution_signal == "BUY" and shares > 0:
+        trade_value = shares * price
+        current_positions[ticker] = current_positions.get(ticker, 0) + trade_value
+        new_total_value = portfolio_value + trade_value
+    else:
+        new_total_value = portfolio_value
+        trade_value = 0
 
-data_client = StockHistoricalDataClient(
-    config.API_Key,
-    config.Secret_key
-)
+    new_weights = {sym: val / new_total_value for sym, val in current_positions.items() if val > 0}
+    max_weight = max(new_weights.values()) if new_weights else 0
 
-quote = data_client.get_stock_latest_quote(
-    StockLatestQuoteRequest(symbol_or_symbols=[symbol])
-)
+    # --- ADJUST IF EXCEEDS 80% ---
+    if max_weight > 0.8 and ticker in new_weights and new_weights[ticker] > 0.8:
+        target_value = 0.8 * new_total_value
+        current_value = current_positions[ticker]
+        if current_value > target_value:
+            excess_value = current_value - target_value
+            excess_shares = int(excess_value / price)
+            shares -= excess_shares
+            if shares < 0:
+                shares = 0
+            # update simulation
+            trade_value = shares * price
+            current_positions[ticker] = current_positions.get(ticker, 0) - (excess_value - excess_shares * price) + trade_value  # approx
+            new_weights[ticker] = current_positions[ticker] / new_total_value
 
-price = quote[symbol].ask_price
-print(f"Current Price: ${price:.2f}")
+    max_weight = max(new_weights.values()) if new_weights else 0
+    print(f"{ticker} - Adjusted Shares: {shares}, Max Portfolio Weight: {max_weight:.2f}")
 
+    # --- LOG TRADE (PAPER TRADING - NO REAL EXECUTION) ---
+    if execution_signal == "BUY" and shares > 0:
+        print(f"PAPER TRADE: Would BUY {shares} shares of {ticker}")
+    elif execution_signal == "SELL":
+        print(f"PAPER TRADE: Would SELL {shares} shares of {ticker}")
+    else:
+        print(f"No trade for {ticker}")
 
-# --- COMPUTE POSITION SIZE IN SHARES ---
-dollar_amount = position_size * portfolio_value
-
-shares = int(dollar_amount / price)
-
-print(f"Dollar Allocation: ${dollar_amount:.2f}")
-print(f"Shares to buy: {shares}")
-
-
-# --- EXECUTE TRADE ---
-if execution_signal == "BUY" and shares > 0:
-
-    #order = MarketOrderRequest(
-    #    symbol=symbol,
-    #    qty=shares,
-    #    side=OrderSide.BUY,
-    #    time_in_force=TimeInForce.DAY
-    #)
-
-    #trading_client.submit_order(order)
-    print(f"BUY order submitted: {shares} shares of {symbol}")
-
-elif execution_signal != "BUY":
-    print("No trade executed (not a BUY signal)")
-
-else:
-    print("Position size too small → no trade")
-
-positions = get_positions(trading_client)
-print(positions)
-
-# --- ANALYZE PORTFOLIO WEIGHTS AND DETERMINE ALLOCATION
-weights = analyze_portfolio_weights(positions)
-
-for pos in weights:
-    print(f"{pos['symbol']}: {pos['weight']*100:.2f}%")
-
-    if pos["warning"]:
-        print("⚠️ WARNING: Position exceeds 30% of portfolio!")
+print("\n===== SIMULATED PORTFOLIO AFTER TRADES =====")
+for sym, val in current_positions.items():
+    weight = val / new_total_value
+    print(f"{sym}: ${val:.2f} ({weight*100:.2f}%)")
+    if weight > 0.8:
+        print("WARNING: Position exceeds 80% of portfolio!")

@@ -35,7 +35,7 @@ client = StockHistoricalDataClient(config.API_Key, config.Secret_key)
 #shorter time frame in order to get momentum accounted in trading strategies
 start_date = datetime.today() - timedelta(days=500)
 end_date = datetime.today().strftime('%Y-%m-%d')
-tickers = ["AAPL", "TSLA", "SPY"]
+tickers = ["AAPL", "TSLA", "NVDA"]
 
 #specify stock data request
 request_params = StockBarsRequest(
@@ -99,7 +99,7 @@ df_tsla = df_small.query('symbol == "TSLA"')
 
 #plt.show()
 
-df_buysell= df_small.sort_values(by='timestamp', ascending=False).head(2)
+df_buysell= df_small.sort_values(by='timestamp').groupby('symbol').tail(1)
 
 #the buy or sell order to be executed based on SMA50 for each stock
 print(df_buysell[['symbol', 'long_short']])
@@ -109,10 +109,11 @@ print(df_buysell[['symbol', 'long_short']])
 #and https://unofficed.com/courses/markov-model-application-of-markov-chain-in-stock-market/lessons/markov-chains-in-stock-market-using-python-getting-transition-matrix/
 
 #Loop through each stock ticker
-#tickers = ['TSLA', 'AAPL']
-tickers = ['AAPL']  # Adjust this list as needed
+tickers = ['AAPL', 'TSLA', 'NVDA']
 markov_matrices = {}
 datasets_of_patterns = {}
+markov_signals = {}
+state_series_dict = {}
 
 for ticker in tickers:
     df_ticker_all = df[df['symbol'] == ticker]
@@ -159,60 +160,41 @@ for ticker in tickers:
 
     markov_matrices[ticker] = combined_matrix
 
-# Print Markov matrices
-for ticker in tickers:
-    print(f"{ticker} Markov Matrix:")
-    print(markov_matrices[ticker])
-    print("\n")
+    # Prepare patterns DataFrame for probabilities
+    patterns_df = pd.DataFrame(new_dataset_df.iloc[-1]).T  # Use the last row of new_dataset_df
 
-# Prepare patterns DataFrame for probabilities
-patterns_df = pd.DataFrame(new_dataset_df.iloc[-1]).T  # Use the last row of new_dataset_df
+    datasets_of_patterns[ticker] = patterns_df
 
-# Debugging: Check the contents of patterns_df
-print("Patterns DataFrame:")
-print(patterns_df)
+    def get_probability(row, variable, matrix):
+        state = row.get(f'state_{variable}', None)
+        prior_state = row.get(f'priorstate_{variable}', None)
 
-def get_probability(row, variable):
-    state = row.get(f'state_{variable}', None)
-    prior_state = row.get(f'priorstate_{variable}', None)
+        prior_state_key = f'priorstate_{prior_state.lower()}' if prior_state else None
 
-    prior_state_key = f'priorstate_{prior_state.lower()}' if prior_state else None
+        if state and prior_state_key:
+            lookup_col = f'state_{variable}_{state.strip().lower()}'
+            if prior_state_key in matrix.index:
+                if lookup_col in matrix.columns:
+                    try:
+                        return matrix.loc[prior_state_key, lookup_col]
+                    except KeyError as e:
+                        print(f"KeyError: {e} - Check if '{prior_state_key}' exists in the index.")
+        return None
 
-    if state and prior_state_key:
-        lookup_col = f'state_{variable}_{state.strip().lower()}'
-        print(f"Lookup Column: {lookup_col}, Prior State Key: {prior_state_key}")
+    patterns_df['probability_close'] = patterns_df.apply(lambda row: get_probability(row, 'close', combined_matrix), axis=1)
 
-        if prior_state_key in markov_matrices[ticker].index:
-            if lookup_col in markov_matrices[ticker].columns:
-                try:
-                    return markov_matrices[ticker].loc[prior_state_key, lookup_col]
-                except KeyError as e:
-                    print(f"KeyError: {e} - Check if '{prior_state_key}' exists in the index.")
-    return None
+    markov_buy_sell_hold = patterns_df[['state_close', 'priorstate_close', 'probability_close']]
 
-patterns_df['probability_close'] = patterns_df.apply(lambda row: get_probability(row, 'close'), axis=1)
+    markov_buy_sell_hold['buy_sell_hold'] = markov_buy_sell_hold['state_close'].apply(
+        lambda x: 'buy' if x == 'Up' else ('hold' if x == 'Steady' else 'sell')
+    )
 
-markov_buy_sell_hold = patterns_df[['state_close', 'priorstate_close', 'probability_close']]
+    markov_signals[ticker] = markov_buy_sell_hold['buy_sell_hold'].iloc[0]
 
-markov_buy_sell_hold['buy_sell_hold'] = markov_buy_sell_hold['state_close'].apply(
-    lambda x: 'buy' if x == 'Up' else ('hold' if x == 'Steady' else 'sell')
-)
+    state_series_dict[ticker] = new_dataset_df['state_close']
 
-#3. trading startegy is Long Short-Term Memory (LSTM). 
+#3. trading strategy is Long Short-Term Memory (LSTM). 
 #LSTM is useful for recognizing patterns in time-series especially in nonlinear data.
-
-#firstly we test and fit the model 
-#only AAPL closing prices for analysis
-lstm_df = pd.DataFrame(df_aapl['close'])
-
-#change prices to returns so that the min max scaling is useful
-lstm_df["returns"] = (lstm_df['close'] - lstm_df['close'].shift(1)) / lstm_df['close'].shift(1)
-lstm_df = lstm_df.drop(['close'], axis=1)
-lstm_df.dropna(inplace=True)
-
-#Normalize the data
-scaler = MinMaxScaler(feature_range=(0, 1))
-returns_scaled = scaler.fit_transform(lstm_df)
 
 def create_sequences(data, time_step=60):
     X, y = [], []
@@ -221,101 +203,88 @@ def create_sequences(data, time_step=60):
         y.append(data[i, 0])
     return np.array(X), np.array(y)
 
-X, y = create_sequences(returns_scaled, time_step=60)
-X = X.reshape(X.shape[0], X.shape[1], 1)
+lstm_signals = {}
+returns_series_dict = {}
 
-train_size = int(len(returns_scaled) * 0.75)
-X_train, X_test = X[:train_size], X[train_size:]
-y_train, y_test = y[:train_size], y[train_size:]
+for ticker in tickers:
+    df_ticker = df_small[df_small['symbol'] == ticker]
+    lstm_df = pd.DataFrame(df_ticker['close'])
 
-lstm_model = Sequential([
-    LSTM(units=50, input_shape=(X_train.shape[1], X_train.shape[2])),
-    Dense(units=1)
-])
+    #change prices to returns so that the min max scaling is useful
+    lstm_df["returns"] = (lstm_df['close'] - lstm_df['close'].shift(1)) / lstm_df['close'].shift(1)
+    lstm_df = lstm_df.drop(['close'], axis=1)
+    lstm_df.dropna(inplace=True)
 
-lstm_model.compile(optimizer='adam', loss='mean_squared_error')
+    returns_series_dict[ticker] = lstm_df["returns"]
 
-lstm_model.fit(X_train, y_train, epochs=100, batch_size=32)
+    #Normalize the data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    returns_scaled = scaler.fit_transform(lstm_df)
 
-train_loss = lstm_model.evaluate(X_train, y_train, verbose=0)
-test_loss = lstm_model.evaluate(X_test, y_test, verbose=0)
+    X, y = create_sequences(returns_scaled, time_step=60)
+    X = X.reshape(X.shape[0], X.shape[1], 1)
 
-train_predictions = lstm_model.predict(X_train)
-test_predictions = lstm_model.predict(X_test)
+    train_size = int(len(returns_scaled) * 0.75)
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
 
-train_predictions = scaler.inverse_transform(train_predictions)
-y_train_unscaled = scaler.inverse_transform(y_train.reshape(-1, 1))
-test_predictions = scaler.inverse_transform(test_predictions)
-y_test_unscaled = scaler.inverse_transform(y_test.reshape(-1, 1))
+    lstm_model = Sequential([
+        LSTM(units=50, input_shape=(X_train.shape[1], X_train.shape[2])),
+        Dense(units=1)
+    ])
 
-plt.figure(figsize=(12, 6))
+    lstm_model.compile(optimizer='adam', loss='mean_squared_error')
 
-plt.plot(range(len(y_train_unscaled)), y_train_unscaled, color='blue', label='Actual Train Returns')
-plt.plot(range(len(train_predictions)), train_predictions, color='red', linestyle='--', label='Predicted Train Returns')
+    lstm_model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
 
-plt.plot(range(len(y_train_unscaled), len(y_train_unscaled) + len(y_test_unscaled)), y_test_unscaled, color='green', label='Actual Test Returns')
-plt.plot(range(len(train_predictions), len(train_predictions) + len(test_predictions)), test_predictions, color='orange', linestyle='--', label='Predicted Test Returns')
+    #secondly, the actual prediction for tomorrows return
+    last_60_days = lstm_df.values[-60:]
+    last_60_days = last_60_days.reshape(-1, 1)
 
-plt.title('Actual vs Predicted Closing Returns (LSTM)', fontsize=16)
-plt.xlabel('Time', fontsize=14)
-plt.ylabel('Returns (%)', fontsize=14)
-plt.legend()
-plt.grid(True)
+    last_60_days_scaled = scaler.transform(last_60_days)
 
-#secondly, the actual prediction for tomorrows return
-last_60_days = lstm_df.values[-60:]
-last_60_days = last_60_days.reshape(-1, 1)
+    X_test_input = last_60_days_scaled.reshape(1, 60, 1)
 
-last_60_days_scaled = scaler.transform(last_60_days)
+    predicted_return = lstm_model.predict(X_test_input, verbose=0)
 
-X_test_input = last_60_days_scaled.reshape(1, 60, 1)
+    predicted_return_unscaled = scaler.inverse_transform(predicted_return)
 
-predicted_return = lstm_model.predict(X_test_input)
+    today_return = lstm_df['returns'].values[-1]
 
-predicted_return_unscaled = scaler.inverse_transform(predicted_return)
+    lstm_signals[ticker] = "buy" if predicted_return_unscaled[0][0] > today_return else "sell"
 
-today_return = lstm_df['returns'].values[-1]
+# Step 1: Collect signals from each strategy per stock
+signals_dict = {}
 
-print(f"Today's return: ${today_return:.2f}")
-print(f"Predicted Tomorrow's return: ${predicted_return_unscaled[0][0]:.2f}")
+for ticker in tickers:
+    sma_signal = df_buysell[df_buysell['symbol'] == ticker]['long_short'].iloc[0]
+    markov_signal = markov_signals[ticker]
+    lstm_signal = lstm_signals[ticker]
 
-if predicted_return_unscaled[0][0] > today_return:
-    print("buy")
-else:
-    print("sell")
+    signals_list = [sma_signal, markov_signal, lstm_signal]
 
-# Step 1: Collect signals from each strategy
-sma_signal = df_buysell[['symbol', 'long_short']].iloc[0]['long_short']
+    buy_signals = signals_list.count('buy')
+    sell_signals = signals_list.count('sell')
 
-markov_signal = markov_buy_sell_hold['buy_sell_hold'].iloc[0]
+    if buy_signals >= 2:
+        final_decision = "buy"
+    elif sell_signals >= 2:
+        final_decision = "sell"
+    else:
+        final_decision = "hold"
 
-lstm_signal = "buy" if predicted_return_unscaled[0][0] > today_return else "sell"
+    signals_dict[ticker] = {
+        'sma': sma_signal,
+        'markov': markov_signal,
+        'lstm': lstm_signal,
+        'final': final_decision
+    }
 
-signals = [sma_signal, markov_signal, lstm_signal]
-
-buy_signals = signals.count('buy')
-sell_signals = signals.count('sell')
-
-if buy_signals >= 2:
-    final_decision = "buy"
-elif sell_signals >= 2:
-    final_decision = "sell"
-else:
-    final_decision = "hold"
-
-print(f"SMA Signal: {sma_signal}")
-print(f"Markov Signal: {markov_signal}")
-print(f"LSTM Signal: {lstm_signal}")
-print(f"Final Decision: {final_decision}")
+    print(f"{ticker} - SMA: {sma_signal}, Markov: {markov_signal}, LSTM: {lstm_signal}, Final: {final_decision}")
 
 # ===== EXPORT VARIABLES FOR OTHER FILES =====
 
-# Use AAPL as main trading asset
-returns_series = df_aapl["pct_change"].dropna()
-
-# Align states with returns
-state_series = new_dataset_df['state_close']
-
-# Export signals and matrices
-signals = signals
+signals = signals_dict
 markov_matrices = markov_matrices
+returns_series = returns_series_dict
+state_series = state_series_dict

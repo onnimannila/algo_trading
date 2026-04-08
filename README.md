@@ -9,11 +9,11 @@ This is chosen for simplicity. In order to get a deeper dive to the markets one 
 1. connect to Alpaca trading API (paper trading)
 2. fetch market data for traded instruments
 3. execute rule-based calculations
-4. execute trades based on trading signals (kelly criterion based on markov chain?)
+4. execute trades based on trading signals
+5. implement risk management calculations for the portfolio (VaR, Sharpe etc.)
+6. adjust strategy based on portfolio composition
 
 ## TO DO
 
-5. implement risk management calculations for the portfolio (VaR etc.)
-6. Make strategy, execution and balancing work for all 3 stocks
-7. adjust strategy based on portfolio composition
-8. make trading automatic by putting scripts on cloud server to be ran daily
+7. make trading automatic by putting scripts on cloud server to be ran daily
+8. make the algortimh produce a simple pdf of all analysis and decisions for the user
