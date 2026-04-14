@@ -1,0 +1,3 @@
+# Ignore all algorithm result files
+*.pdf
+*.png

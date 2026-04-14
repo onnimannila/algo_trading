@@ -12,8 +12,5 @@ This is chosen for simplicity. In order to get a deeper dive to the markets one 
 4. execute trades based on trading signals
 5. implement risk management calculations for the portfolio (VaR, Sharpe etc.)
 6. adjust strategy based on portfolio composition
+7. create a report of the algo performance
 
-## TO DO
-
-7. make trading automatic by putting scripts on cloud server to be ran daily
-8. make the algortimh produce a simple pdf of all analysis and decisions for the user

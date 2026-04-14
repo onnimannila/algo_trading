@@ -1,58 +1,40 @@
-#sub script to check current position and risk before executing a trade
+# Position and risk analysis module
+# Calculates portfolio weights, Sharpe ratio, VaR, and other risk metrics
 
-import alpaca_trade_api as trade_api
-from alpaca_trade_api import REST
-from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.stream import TradingStream
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-
-#import necessary libraries to plot data
 import sys
 import os
-from matplotlib import pyplot as plt
-import plotly.express as px
 import pandas as pd
 import numpy as np
 from conf import config
-from datetime import datetime, timedelta
-import pickle
-import json as json
-import trading as strategies
 
-
-api = trade_api.REST(config.API_Key, config.Secret_key, config.alpaca_base_URL)
-
-# --- FIX PATH (since execution.py is in subfolder) ---
+# --- FIX PATH ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 def get_positions(trading_client):
+    """Fetch all open positions from trading client"""
     return trading_client.get_all_positions()
 
 def analyze_portfolio_weights(positions, threshold=0.8):
-    # total portfolio market value
+    """
+    Analyze portfolio weights per position
+    Flags positions exceeding 80% threshold
+    """
     total_market_value = sum(float(p.market_value) for p in positions)
-
     results = []
-
+    
     for p in positions:
         symbol = p.symbol
         market_value = float(p.market_value)
-
         weight = market_value / total_market_value if total_market_value > 0 else 0
-
         warning = weight > threshold
-
+        
         results.append({
             "symbol": symbol,
             "market_value": market_value,
             "weight": weight,
             "warning": warning
         })
-
+    
     return results
 
 def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
@@ -61,43 +43,59 @@ def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     """
     if len(returns) == 0:
         return 0.0
+    
+    daily_risk_free = risk_free_rate / 252
     mean_return = np.mean(returns)
     std_return = np.std(returns)
+    
     if std_return == 0:
         return 0.0
-    sharpe = (mean_return - risk_free_rate) / std_return
+    
+    sharpe = (mean_return - daily_risk_free) / std_return
     return sharpe
 
 def calculate_simple_var(returns, confidence=0.95):
     """
-    Calculate simple VaR: -z * std_dev (assuming normal distribution)
-    z for 95% = 1.645
-    Returns positive value as loss amount
+    Calculate Value at Risk (VaR) using normal distribution
+    Returns positive value as percentage loss
     """
     if len(returns) == 0:
         return 0.0
-    z = {0.95: 1.645, 0.99: 2.326}.get(confidence, 1.645)
+    
+    z_scores = {0.95: 1.645, 0.99: 2.326}
+    z = z_scores.get(confidence, 1.645)
     std_return = np.std(returns)
-    var = z * std_return
-    return var  # positive, as potential loss
+    var_pct = z * std_return
+    
+    return var_pct
 
 def analyze_portfolio_risk(positions, returns_dict):
     """
-    Analyze risk metrics for portfolio and individual positions
+    Comprehensive risk analysis for entire portfolio and individual positions
     """
+    if not positions:
+        return {'portfolio_sharpe': 0, 'portfolio_var': 0, 'individual_risks': {}}
+    
     total_market_value = sum(float(p.market_value) for p in positions)
-    portfolio_returns = []
-
+    portfolio_returns_list = []
+    
     # Aggregate portfolio returns (weighted)
     for p in positions:
         symbol = p.symbol
         if symbol in returns_dict:
-            weight = float(p.market_value) / total_market_value
-            portfolio_returns.extend(returns_dict[symbol] * weight)
-
+            weight = float(p.market_value) / total_market_value if total_market_value > 0 else 0
+            weighted_returns = returns_dict[symbol] * weight
+            portfolio_returns_list.append(weighted_returns)
+    
+    if portfolio_returns_list:
+        portfolio_returns = pd.concat(portfolio_returns_list) if isinstance(portfolio_returns_list[0], pd.Series) else np.array(portfolio_returns_list).flatten()
+    else:
+        portfolio_returns = np.array([])
+    
     portfolio_sharpe = calculate_sharpe_ratio(portfolio_returns)
     portfolio_var = calculate_simple_var(portfolio_returns)
-
+    
+    # Individual risk metrics
     individual_risks = {}
     for p in positions:
         symbol = p.symbol
@@ -105,7 +103,7 @@ def analyze_portfolio_risk(positions, returns_dict):
             sharpe = calculate_sharpe_ratio(returns_dict[symbol])
             var = calculate_simple_var(returns_dict[symbol])
             individual_risks[symbol] = {'sharpe': sharpe, 'var': var}
-
+    
     return {
         'portfolio_sharpe': portfolio_sharpe,
         'portfolio_var': portfolio_var,
